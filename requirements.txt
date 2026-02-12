@@ -1,0 +1,17 @@
+# Backend API Requirements
+fastapi==0.115.0
+uvicorn[standard]==0.30.1
+pydantic==2.9.2
+python-multipart==0.0.9
+
+# Dashboard Requirements
+streamlit==1.36.0
+requests==2.31.0
+pandas==2.2.3
+plotly==5.22.0
+
+# Data Processing
+numpy==1.26.4
+
+# Production Server
+gunicorn==23.0.0
