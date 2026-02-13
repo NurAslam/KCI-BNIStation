@@ -1,36 +1,92 @@
-name: FastAPI CI
+name: CI/CD FastAPI
 
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
+
+concurrency:
+  group: "cicd-${{ github.ref }}"
+  cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Prepare deploy package
+        run: |
+          mkdir -p deploy_pkg
+          rsync -av --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "__pycache__" \
+            --exclude "*.pyc" \
+            --exclude "myenv" \
+            --exclude ".venv" \
+            --exclude ".env" \
+            ./ deploy_pkg/
+
+      - name: Upload files to server (SCP)
+        uses: appleboy/scp-action@v0.1.7
         with:
-          python-version: "3.10"
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "deploy_pkg/*"
+          target: "/home/ml/be_kci_analysis/"
+          strip_components: 1
+          overwrite: true
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Install deps & reload PM2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script_stop: true
+          command_timeout: 30m
+          script: |
+            set -e
 
-      - name: Python syntax check
-        run: |
-          python -m py_compile $(find . -name "*.py")
+            APP_DIR="/home/ml/be_kci_analysis/"
+            APP_NAME="${{ secrets.PM2_APP_NAME }}"
+            APP_PORT="${{ secrets.APP_PORT }}"
 
-      - name: Run FastAPI import test
-        run: |
-          python - <<EOF
-          from backend import app
-          print("FastAPI app loaded successfully")
-          EOF
+            echo "==> cd to app dir: $APP_DIR"
+            cd "$APP_DIR"
+
+            # --- make pm2 available in non-interactive shell ---
+            export NVM_DIR="$HOME/.nvm"
+            if [ -s "$NVM_DIR/nvm.sh" ]; then
+              . "$NVM_DIR/nvm.sh"
+            else
+              echo "nvm.sh not found at $NVM_DIR/nvm.sh"
+              exit 1
+            fi
+
+            # optional: force node version (sesuaikan)
+            nvm use 20 || nvm use v20.19.6 || true
+
+            # ensure pm2 exists
+            command -v pm2 >/dev/null 2>&1 || npm i -g pm2
+
+            echo "==> ensure venv"
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+
+            echo "==> install deps"
+            . .venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            echo "==> reload pm2 via ecosystem"
+            pm2 reload ecosystem.config.js || pm2 start ecosystem.config.js
+            pm2 save
+
+            echo "==> done"
